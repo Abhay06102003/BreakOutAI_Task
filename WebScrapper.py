@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from scraperapi_sdk import ScraperAPIClient
 from bs4 import BeautifulSoup
 import requests
+from datetime import datetime
 
 load_dotenv()
 
@@ -66,12 +67,13 @@ def extract_text_from_url(client, url):
         print(f"Error extracting text from {url}: {str(e)}")
         return ""
 
-def extract_top_website_text(keyword,top_n):
+def extract_top_website_text(keyword,question_keyword, top_n):
     """
-    Extracts the full text content from the top 4 search results for the given keyword.
+    Extracts the full text content from the top search results for the given keyword.
 
     Args:
         keyword (str): The keyword to search for.
+        top_n (int): Number of top results to extract.
 
     Returns:
         list: A list of dictionaries containing website URLs and their preprocessed text content.
@@ -79,7 +81,8 @@ def extract_top_website_text(keyword,top_n):
     client = ScraperAPIClient(os.getenv("SCRAPER_API_KEY"))
 
     # First, get the search results
-    search_url = f"https://www.google.com/search?q={keyword}&num={top_n}"
+    search = ' '.join([keyword, question_keyword])
+    search_url = f"https://www.google.com/search?q={search}&num={top_n}"
     search_response = client.get(url=search_url)
     
     # Parse the search results HTML
@@ -102,11 +105,48 @@ def extract_top_website_text(keyword,top_n):
 
     return website_contents
 
+def save_to_markdown(data, keyword):
+    """
+    Saves the extracted data to a Markdown file.
+
+    Args:
+        data (list): The data to save
+        keyword (str): The search keyword used
+    """
+    # Create 'data' directory if it doesn't exist
+    if not os.path.exists('data'):
+        os.makedirs('data')
+    
+    # Create filename with timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"data/search_results_{keyword.replace(' ', '_')}_{timestamp}.md"
+    
+    # Create the Markdown content
+    markdown_content = f"# Search Results for '{keyword}'\n\n"
+    
+    for idx, result in enumerate(data, 1):
+        markdown_content += f"## Website {idx}\n"
+        markdown_content += f"URL: {result['url']}\n\n"
+        markdown_content += result['content'] + "\n\n"
+    
+    # Save the Markdown file
+    with open(filename, 'w', encoding='utf-8') as file:
+        file.write(markdown_content)
+    
+    print(f"Data saved successfully to {filename}")
+    return filename
+
 # Example usage
 if __name__ == "__main__":
-    keyword = "Artificial Intelligence"
-    results = extract_top_website_text(keyword,2)
+    keyword = "Microsoft"
+    question_keyword = "Net worth"
+    results = extract_top_website_text(keyword,question_keyword, 3)
     
+    # Save results to Markdown
+    markdown_file = save_to_markdown(results, keyword)
+    
+    # Print preview of saved data
+    print("\nExtracted data preview:")
     for idx, result in enumerate(results, 1):
         print(f"\nWebsite {idx}:")
         print(f"URL: {result['url']}")
