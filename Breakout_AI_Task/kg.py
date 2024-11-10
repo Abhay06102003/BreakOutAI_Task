@@ -29,7 +29,8 @@ class KG:
         )
         Settings.llm = llm
         Settings.embed_model = embed_model
-        Settings.chunk_size = 512
+        Settings.chunk_size = 1024
+        Settings.embed_batch_size = 8
         
         self.graph_store = Neo4jGraphStore(
             username=os.getenv("NEO4J_USER"),
@@ -50,8 +51,9 @@ class KG:
         index = KnowledgeGraphIndex.from_documents(
             documents,
             storage_context=self.storage_context,
-            max_triplets_per_chunk=2,
-            show_progress=True
+            max_triplets_per_chunk=4,
+            show_progress=True,
+            include_embeddings=True,
         )
         return index
 

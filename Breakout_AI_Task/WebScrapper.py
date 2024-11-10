@@ -6,6 +6,8 @@ from bs4 import BeautifulSoup
 import time
 from urllib.parse import quote
 from random import uniform
+import concurrent.futures
+from functools import partial
 
 load_dotenv()
 
@@ -48,20 +50,21 @@ def extract_text_from_url(session, url):
         str: Extracted and preprocessed text content
     """
     try:
-        # Add delay to avoid rate limiting
-        time.sleep(uniform(1, 3))
+        # Reduce sleep time and make it optional
+        time.sleep(uniform(0.5, 1))
         
         # Set headers to mimic browser
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         
-        # Get the webpage content
-        response = session.get(url, headers=headers, timeout=30)
-        response.html.render(timeout=30)  # Render JavaScript content
+        # Get the webpage content without JavaScript rendering
+        response = session.get(url, headers=headers, timeout=10)  # Reduced timeout
+        
+        # Only render JavaScript if necessary (you can remove this if not needed)
+        # response.html.render(timeout=10)
 
-        # Parse the HTML content
-        soup = BeautifulSoup(response.html.html, 'html.parser')
+        soup = BeautifulSoup(response.text, 'lxml')  # Using lxml parser instead of html.parser
 
         # Remove unwanted elements
         for element in soup(['script', 'style', 'header', 'footer', 'nav']):
@@ -94,7 +97,7 @@ def extract_top_website_text(keyword, top_n):
     encoded_keyword = quote(keyword)
     
     # Google search URL
-    search_url = f"https://www.google.com/search?q={encoded_keyword}&num={top_n}"
+    search_url = f"https://www.google.com/search?q={encoded_keyword}&num={top_n+5}"  # Request extra results
     
     try:
         # Add headers to mimic browser behavior
@@ -104,29 +107,29 @@ def extract_top_website_text(keyword, top_n):
         
         # Get search results
         search_response = session.get(search_url, headers=headers)
-        search_response.html.render(timeout=30)
+        # Remove JavaScript rendering for search results if possible
+        # search_response.html.render(timeout=10)
         
         # Parse the search results HTML
-        soup = BeautifulSoup(search_response.html.html, 'html.parser')
+        soup = BeautifulSoup(search_response.text, 'lxml')
         
-        # Extract URLs from search results
-        website_contents = []
+        # Extract URLs first
+        urls = []
         for result in soup.select('div.g'):
             link = result.find('a', href=True)
-            if link:
-                url = link['href']
-                if url.startswith('http'):  # Ensure it's a valid URL
-                    # Extract full text content from the webpage
-                    content = extract_text_from_url(session, url)
-                    if content:
-                        website_contents.append({
-                            'url': url,
-                            'content': content
-                        })
-                        
-                    # Break if we have reached the desired number of results
-                    if len(website_contents) >= top_n:
-                        break
+            if link and link['href'].startswith('http'):
+                urls.append(link['href'])
+        
+        # Process URLs in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            extract_func = partial(extract_text_from_url, session)
+            results = list(executor.map(extract_func, urls[:top_n]))
+            
+        website_contents = [
+            {'url': url, 'content': content}
+            for url, content in zip(urls[:top_n], results)
+            if content  # Filter out empty results
+        ]
         
         save_to_markdown(website_contents, keyword)
         return website_contents
