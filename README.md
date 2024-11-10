@@ -54,8 +54,8 @@ An intelligent system that combines web scraping, natural language processing, a
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/Abhay06102003/Breakout_AI_Task.git
-cd Breakout_AI_Task
+git clone https://github.com/Abhay06102003/BreakOutAI_Task.git
+cd BreakOutAI_Task
 ```
 
 2. Set up environment variables:
