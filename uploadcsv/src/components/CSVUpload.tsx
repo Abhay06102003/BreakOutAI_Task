@@ -1,16 +1,19 @@
 import React, { useState, ChangeEvent } from 'react';
-import { FileUploadSection } from './FileUploadSection';
-import { ColumnDropdown } from './ColumnDropdown';
-import { ValueInput } from './ValueInput';
+import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuItem } from '@/components/ui/dropdown-menu';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 
 interface FileUploadState {
   file: File | null;
   error: string;
   success: string;
   columns: string[];
-  isDropdownOpen: boolean;
   selectedColumn: string | null;
   inputValue: string;
+  uploadType: 'file' | 'sheets' | null;
+  sheetsUrl: string;
 }
 
 const CSVUpload: React.FC = () => {
@@ -19,13 +22,13 @@ const CSVUpload: React.FC = () => {
     error: '',
     success: '',
     columns: [],
-    isDropdownOpen: false,
     selectedColumn: null,
-    inputValue: ''
+    inputValue: '',
+    uploadType: null,
+    sheetsUrl: ''
   });
 
   const [content, setContent] = useState<string | undefined>(undefined);
-
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>): void => {
     setState(prev => ({ 
@@ -33,7 +36,6 @@ const CSVUpload: React.FC = () => {
       error: '', 
       success: '', 
       columns: [],
-      isDropdownOpen: false,
       selectedColumn: null,
       inputValue: ''
     }));
@@ -132,18 +134,10 @@ const CSVUpload: React.FC = () => {
     }
   };
 
-  const toggleDropdown = () => {
-    setState(prev => ({
-      ...prev,
-      isDropdownOpen: !prev.isDropdownOpen
-    }));
-  };
-
   const handleColumnSelect = (column: string) => {
     setState(prev => ({
       ...prev,
-      selectedColumn: column,
-      isDropdownOpen: false
+      selectedColumn: column
     }));
   };
 
@@ -154,19 +148,60 @@ const CSVUpload: React.FC = () => {
     }));
   };
 
+  const handleSheetsUrlChange = (e: ChangeEvent<HTMLInputElement>) => {
+    setState(prev => ({
+      ...prev,
+      sheetsUrl: e.target.value
+    }));
+  };
+
+  const handleUploadTypeSelect = (type: 'file' | 'sheets') => {
+    setState(prev => ({
+      ...prev,
+      uploadType: type,
+      error: '',
+      success: '',
+      file: null,
+      sheetsUrl: '',
+      columns: [],
+      selectedColumn: null,
+      inputValue: ''
+    }));
+  };
+
   const handleSubmit = async () => {
-    const { file, selectedColumn, inputValue } = state;
-    
-    if (!file || !selectedColumn || !inputValue) {
+    const { file, selectedColumn, inputValue, uploadType, sheetsUrl } = state;
+
+    if (!selectedColumn || !inputValue) {
       setState(prev => ({
         ...prev,
-        error: 'Please select a file, column, and enter a question'
+        error: 'Please select a column and enter a question'
+      }));
+      return;
+    }
+
+    if (uploadType === 'file' && !file) {
+      setState(prev => ({
+        ...prev,
+        error: 'Please select a file'
+      }));
+      return;
+    }
+
+    if (uploadType === 'sheets' && !sheetsUrl) {
+      setState(prev => ({
+        ...prev,
+        error: 'Please enter a Google Sheets URL'
       }));
       return;
     }
 
     const formData = new FormData();
-    formData.append('file', file);
+    if (uploadType === 'file' && file) {
+      formData.append('file', file);
+    } else if (uploadType === 'sheets') {
+      formData.append('sheetsUrl', sheetsUrl);
+    }
     formData.append('column', selectedColumn);
     formData.append('question', inputValue);
 
@@ -219,66 +254,164 @@ const CSVUpload: React.FC = () => {
     URL.revokeObjectURL(url);
     document.body.removeChild(link);
   };
-  
 
-  const { file, error, success, columns, isDropdownOpen, selectedColumn, inputValue } = state;
+  const handleSheetsUpload = async (): Promise<void> => {
+    const { sheetsUrl } = state;
+    
+    if (!sheetsUrl) {
+      setState(prev => ({
+        ...prev,
+        error: 'Please enter a Google Sheets URL'
+      }));
+      return;
+    }
+
+    try {
+      const formData = new FormData();
+      formData.append('sheet_url', sheetsUrl);
+
+      const response = await fetch('http://localhost:5001/sheets-headers', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch sheet headers');
+      }
+
+      setState(prev => ({
+        ...prev,
+        columns: data.headers, 
+        success: 'Sheet headers loaded successfully!'
+      }));
+    } catch (err) {
+      setState(prev => ({
+        ...prev,
+        error: `Error loading sheet headers: ${err instanceof Error ? err.message : 'Unknown error'}`
+      }));
+    }
+  };
+
+  const { file, error, success, columns, selectedColumn, inputValue } = state;
 
   return (
-    <div style={{ maxWidth: '500px', margin: '20px auto', padding: '20px', backgroundColor: '#333', color: '#fff', borderRadius: '8px' }}>
-      <FileUploadSection
-        file={file}
-        onFileChange={handleFileChange}
-        onUpload={handleUpload}
-      />
-
-      {columns.length > 0 && success && (
-        <ColumnDropdown
-          columns={columns}
-          isOpen={isDropdownOpen}
-          onToggle={toggleDropdown}
-          onSelect={handleColumnSelect}
-        />
-      )}
-
-      {selectedColumn && (
-        <ValueInput
-          selectedColumn={selectedColumn}
-          inputValue={inputValue}
-          onInputChange={handleInputChange}
-          onSubmit={handleSubmit}
-        />
-      )}
-
-      {error && (
-        <div style={{ 
-          padding: '10px', 
-          backgroundColor: '#ff4d4d', 
-          color: '#fff', 
-          borderRadius: '4px',
-          marginTop: '10px' 
-        }}>
-          {error}
+    <Card className="w-full max-w-md">
+      <CardHeader>
+        <CardTitle>CSV Upload</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex justify-center space-x-4 mb-4">
+          <Button
+            onClick={() => handleUploadTypeSelect('file')}
+            variant={state.uploadType === 'file' ? 'default' : 'secondary'}
+          >
+            Upload CSV
+          </Button>
+          <Button
+            onClick={() => handleUploadTypeSelect('sheets')}
+            variant={state.uploadType === 'sheets' ? 'default' : 'secondary'}
+          >
+            Use Google Sheets
+          </Button>
         </div>
-      )}
 
-      {success && (
-        <div style={{ 
-          padding: '10px', 
-          backgroundColor: '#28a745', 
-          color: '#fff', 
-          borderRadius: '4px',
-          marginTop: '10px' 
-        }}>
-          {success}
-        </div>
-      )}
+        {state.uploadType === 'file' && (
+          <div>
+            <input
+              type="file"
+              accept=".csv"
+              onChange={handleFileChange}
+              className="w-full border border-gray-300 rounded-md p-2 mb-4"
+            />
+            <Button onClick={handleUpload} className="w-full">
+              Upload
+            </Button>
+          </div>
+        )}
 
-      {content && (
-        <button onClick={handleDownload}>
-          download
-        </button>
-      )}
-    </div>
+        {state.uploadType === 'sheets' && (
+          <div>
+            <Input
+              type="text"
+              placeholder="Enter Google Sheets URL"
+              value={state.sheetsUrl}
+              onChange={handleSheetsUrlChange}
+              className="mb-4"
+            />
+            <Button onClick={handleSheetsUpload} className="w-full">
+              Load Sheet Headers
+            </Button>
+          </div>
+        )}
+
+        {columns.length > 0 && (
+          <div className="mb-4">
+            <label htmlFor="column-select" className="block mb-2">
+              Select a column:
+            </label>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline">
+                  {selectedColumn || 'Select Column'}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                {columns.map((column, index) => (
+                  <DropdownMenuItem
+                    key={index}
+                    onClick={() => handleColumnSelect(column)}
+                  >
+                    {column}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+
+        {selectedColumn && (
+          <div>
+            <label htmlFor="question-input" className="block mb-2">
+              Enter a question:
+            </label>
+            <Input
+              id="question-input"
+              type="text"
+              value={inputValue}
+              onChange={handleInputChange}
+              className="mb-4"
+            />
+            <Button onClick={handleSubmit} className="w-full">
+              Submit
+            </Button>
+          </div>
+        )}
+
+        {error && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertTitle>Error</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {success && (
+          <Alert variant="default" className="mb-4">
+            <AlertTitle>Success</AlertTitle>
+            <AlertDescription>{success}</AlertDescription>
+          </Alert>
+        )}
+
+        {content && (
+          <CardFooter>
+            <Button onClick={handleDownload} className="w-full">
+              Download CSV
+            </Button>
+          </CardFooter>
+        )}
+      </CardContent>
+    </Card>
   );
 };
 
