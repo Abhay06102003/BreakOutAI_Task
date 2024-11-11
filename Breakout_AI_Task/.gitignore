@@ -1,2 +1,8 @@
 .env
 Output.csvembedding_cache/
+data
+embedding_cache
+testing.csv
+results.csv
+intermediate_results.csv
+__pycache__

@@ -6,6 +6,7 @@ from tqdm import tqdm
 import logging
 import pickle
 import hashlib
+from functools import lru_cache
 
 from Keyword_extractor import extract_keywords
 from WebScrapper import extract_top_website_text
@@ -36,7 +37,8 @@ class AllInOne:
         column: str, 
         question: str, 
         max_workers: int = 3,
-        cache_dir: str = "cache"
+        cache_dir: str = "cache",
+        batch_size: int = 100
     ):
         """
         Initialize the AllInOne processor.
@@ -47,22 +49,24 @@ class AllInOne:
             question (str): Question to be answered
             max_workers (int, optional): Maximum number of parallel workers. Defaults to 3.
             cache_dir (str, optional): Directory for caching results. Defaults to "cache".
+            batch_size (int, optional): Size of batches for batch processing. Defaults to 100.
         """
         self.csv = pd.read_csv(csv_path)
         self.column = list(self.csv[column])
         self.question = question
         self.max_workers = max_workers
         self.cache_dir = cache_dir
-        self._setup_cache()
+        self.batch_size = batch_size
         
-        logging.info("Extracting keywords from question")
-        suffix = ' '.join(extract_keywords(self.question))
-        self.searches = [f"{text} {suffix}" for text in self.column]
+        # Pre-compute keywords once instead of for each search
+        self.suffix = ' '.join(extract_keywords(self.question))
+        self.searches = [f"{text} {self.suffix}" for text in self.column]
 
     def _setup_cache(self) -> None:
         """Create cache directory if it doesn't exist."""
         os.makedirs(self.cache_dir, exist_ok=True)
 
+    @lru_cache(maxsize=1000)  # Add memory-based caching
     def _get_cache_filename(self, search: str) -> str:
         """
         Generate a stable cache filename from search string.
@@ -124,22 +128,30 @@ class AllInOne:
             logging.error(error_msg)
             return error_msg
 
+    def _process_batch(self, searches: List[str]) -> List[str]:
+        """Process a batch of searches in parallel"""
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            return list(executor.map(self._process_single_search, searches))
+
     def __call__(self) -> None:
-        """Execute the parallel processing pipeline."""
-        logging.info("Starting parallel processing")
+        """Execute the parallel processing pipeline with batching."""
+        logging.info("Starting batch processing")
         
         try:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                answers = list(tqdm(
-                    executor.map(self._process_single_search, self.searches),
-                    total=len(self.searches),
-                    desc="Processing searches"
-                ))
-            
+            answers = []
+            for i in range(0, len(self.searches), self.batch_size):
+                batch = self.searches[i:i + self.batch_size]
+                batch_answers = self._process_batch(batch)
+                answers.extend(batch_answers)
+                
+                # Optional: Save intermediate results
+                self.csv['answers'] = answers + [''] * (len(self.searches) - len(answers))
+                self.csv.to_csv('intermediate_results.csv', index=False)
+                
             self.csv['answers'] = answers
             
         except Exception as e:
-            logging.error(f"Parallel processing failed: {str(e)}")
+            logging.error(f"Batch processing failed: {str(e)}")
             raise
 
     def get_results_as_dataframe(self) -> pd.DataFrame:
@@ -167,3 +179,41 @@ class AllInOne:
         except Exception as e:
             logging.error(f"Failed to save results: {str(e)}")
             raise
+
+def main():
+    """
+    Test function to demonstrate the usage of AllInOne class.
+    """
+    # Test parameters
+    csv_path = "testing.csv"  # Replace with your actual CSV path
+    column_name = "company"          # Replace with your actual column name
+    question = "Give me the name of CEO of the company?"
+    
+    try:
+        # Initialize the processor
+        processor = AllInOne(
+            csv_path=csv_path,
+            column=column_name,
+            question=question,
+            max_workers=3,
+            batch_size=50
+        )
+        
+        # Process the data
+        logging.info("Starting processing...")
+        processor()
+        
+        # Save results
+        processor.save_results("results.csv")
+        
+        # Display some results
+        results_df = processor.get_results_as_dataframe()
+        print("\nFirst few results:")
+        print(results_df[['company', 'answers']].head())
+        
+    except Exception as e:
+        logging.error(f"Processing failed: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    main()
