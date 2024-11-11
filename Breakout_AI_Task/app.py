@@ -53,6 +53,28 @@ def health_check() -> Dict[str, str]:
     """Health check endpoint"""
     return jsonify({'status': 'healthy'})
 
+@app.route('/sheets-headers', methods=['POST'])
+def get_sheets_headers() -> Any:
+    """Get sheet headers"""
+    sheet_url = request.form.get('sheet_url')
+    sheet_id = sheet_url.split('/')[5]
+    
+    # Convert the Google Sheet URL to CSV export URL
+    csv_url = f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv'
+    try:
+        df = pd.read_csv(csv_url)
+        
+        headers = df.columns.tolist()
+        print(df)
+        print(headers)
+        response = jsonify({'headers': headers})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+    except Exception as e:
+        logging.error(f"Error reading CSV headers: {str(e)}")
+        return jsonify({'error': f'Failed to read CSV file: {str(e)}'}), 400
+
 @app.route('/process', methods=['POST'])
 def process_data() -> Any:
     """
@@ -70,16 +92,34 @@ def process_data() -> Any:
             response = app.make_default_options_response()
             return response
 
-        # Validate request
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
+        # Get the data either from file upload or Google Sheets
+        if 'file' in request.files:
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({'error': 'No file selected'}), 400
+                
+            if not allowed_file(file.filename):
+                return jsonify({'error': 'Invalid file type. Only CSV files are allowed'}), 400
+                
+            # Save uploaded file
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            file.save(filepath)
             
-        if not allowed_file(file.filename):
-            return jsonify({'error': 'Invalid file type. Only CSV files are allowed'}), 400
+        elif 'sheetsUrl' in request.form:
+            # Handle Google Sheets URL
+            sheet_url = request.form.get('sheetsUrl')
+            sheet_id = sheet_url.split('/')[5]
+            csv_url = f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv'
+            
+            # Download and save the CSV
+            df = pd.read_csv(csv_url)
+            filename = 'sheet_data.csv'
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            df.to_csv(filepath, index=False)
+            
+        else:
+            return jsonify({'error': 'No file or sheet URL provided'}), 400
             
         column = request.form.get('column')
         if not column:
@@ -90,11 +130,6 @@ def process_data() -> Any:
             return jsonify({'error': 'Question not provided'}), 400
             
         max_workers = int(request.form.get('max_workers', 3))
-        
-        # Save uploaded file
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(filepath)
         
         logging.info(f"Processing file: {filename}")
         
@@ -136,4 +171,4 @@ def process_data() -> Any:
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=False, host="0.0.0.0", port=5001)
+    app.run(debug=True, host="0.0.0.0", port=5001)

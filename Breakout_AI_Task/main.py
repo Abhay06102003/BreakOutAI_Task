@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import pandas as pd
 from typing import List, Dict, Optional
@@ -6,7 +6,10 @@ from tqdm import tqdm
 import logging
 import pickle
 import hashlib
-from functools import lru_cache
+from functools import lru_cache, partial
+import asyncio
+import aiohttp
+import multiprocessing
 
 from Keyword_extractor import extract_keywords
 from WebScrapper import extract_top_website_text
@@ -36,7 +39,7 @@ class AllInOne:
         csv_path: str, 
         column: str, 
         question: str, 
-        max_workers: int = 3,
+        max_workers: Optional[int] = None,
         cache_dir: str = "cache",
         batch_size: int = 100
     ):
@@ -54,13 +57,17 @@ class AllInOne:
         self.csv = pd.read_csv(csv_path)
         self.column = list(self.csv[column])
         self.question = question
-        self.max_workers = max_workers
+        self.max_workers = max_workers or min(32, multiprocessing.cpu_count() * 2)
         self.cache_dir = cache_dir
         self.batch_size = batch_size
         
-        # Pre-compute keywords once instead of for each search
+        # Pre-compute and cache everything possible
+        self._setup_cache()
         self.suffix = ' '.join(extract_keywords(self.question))
         self.searches = [f"{text} {self.suffix}" for text in self.column]
+        
+        # Initialize shared KG instance
+        self.knowledge_g = KG('data')
 
     def _setup_cache(self) -> None:
         """Create cache directory if it doesn't exist."""
@@ -80,74 +87,68 @@ class AllInOne:
         hash_object = hashlib.md5(search.encode())
         return os.path.join(self.cache_dir, f"search_{hash_object.hexdigest()[:10]}.pkl")
 
-    def _process_single_search(self, search: str) -> str:
-        """
-        Process a single search query with caching.
+    async def _fetch_website_text(self, search: str, session: aiohttp.ClientSession) -> str:
+        """Asynchronous version of website text extraction"""
+        try:
+            return await extract_top_website_text(search, 3, session)
+        except Exception as e:
+            logging.error(f"Error fetching text for {search}: {str(e)}")
+            return ""
 
-        Args:
-            search (str): Search query to process
-
-        Returns:
-            str: Response from knowledge graph or error message
-        """
+    async def _process_single_search_async(self, search: str, session: aiohttp.ClientSession) -> str:
+        """Asynchronous version of single search processing"""
         cache_file = self._get_cache_filename(search)
         
-        # Try to load from cache first
         if os.path.exists(cache_file):
-            logging.info(f"Using cached result for: {search}")
             try:
                 with open(cache_file, 'rb') as f:
                     return pickle.load(f)
-            except Exception as e:
-                logging.warning(f"Cache load failed for {search}: {str(e)}")
+            except Exception:
+                pass
         
-        # Process if not in cache
         try:
-            logging.info(f"Processing search: {search}")
-            extract_top_website_text(search, 3)
+            await self._fetch_website_text(search, session)
+            response = self.knowledge_g.query(self.question)
             
-            knowledge_g = KG('data')
-            response = knowledge_g.query(self.question)
-            
-            # Cleanup
+            # Async file cleanup
             data_file = f"data/{search}.md"
             if os.path.exists(data_file):
                 os.remove(data_file)
             
-            # Cache the result
-            try:
-                with open(cache_file, 'wb') as f:
-                    pickle.dump(response, f)
-            except Exception as e:
-                logging.error(f"Failed to cache result for {search}: {str(e)}")
+            with open(cache_file, 'wb') as f:
+                pickle.dump(response, f)
             
             return response
             
         except Exception as e:
-            error_msg = f"Error processing {search}: {str(e)}"
-            logging.error(error_msg)
-            return error_msg
+            return f"Error processing {search}: {str(e)}"
 
-    def _process_batch(self, searches: List[str]) -> List[str]:
-        """Process a batch of searches in parallel"""
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            return list(executor.map(self._process_single_search, searches))
+    async def _process_batch_async(self, searches: List[str]) -> List[str]:
+        """Process a batch of searches asynchronously"""
+        async with aiohttp.ClientSession() as session:
+            tasks = [self._process_single_search_async(search, session) for search in searches]
+            return await asyncio.gather(*tasks)
 
     def __call__(self) -> None:
-        """Execute the parallel processing pipeline with batching."""
+        """Execute the processing pipeline with async batching"""
         logging.info("Starting batch processing")
         
         try:
             answers = []
-            for i in range(0, len(self.searches), self.batch_size):
-                batch = self.searches[i:i + self.batch_size]
-                batch_answers = self._process_batch(batch)
-                answers.extend(batch_answers)
-                
-                # Optional: Save intermediate results
-                self.csv['answers'] = answers + [''] * (len(self.searches) - len(answers))
-                self.csv.to_csv('intermediate_results.csv', index=False)
-                
+            loop = asyncio.get_event_loop()
+            
+            with tqdm(total=len(self.searches)) as pbar:
+                for i in range(0, len(self.searches), self.batch_size):
+                    batch = self.searches[i:i + self.batch_size]
+                    batch_answers = loop.run_until_complete(self._process_batch_async(batch))
+                    answers.extend(batch_answers)
+                    pbar.update(len(batch))
+                    
+                    # Save intermediate results less frequently
+                    if i % (self.batch_size * 5) == 0:
+                        self.csv['answers'] = answers + [''] * (len(self.searches) - len(answers))
+                        self.csv.to_csv('intermediate_results.csv', index=False)
+            
             self.csv['answers'] = answers
             
         except Exception as e:
